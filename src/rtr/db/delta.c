@@ -1,10 +1,10 @@
 #include "rtr/db/delta.h"
 
 #include <stdatomic.h>
-#include <sys/types.h> /* AF_INET, AF_INET6 (needed in OpenBSD) */
-#include <sys/socket.h> /* AF_INET, AF_INET6 (needed in OpenBSD) */
-#include "types/address.h"
+
+#include "alloc.h"
 #include "data_structure/array_list.h"
+#include "types/address.h"
 
 struct delta_v4 {
 	uint32_t as;
@@ -45,14 +45,12 @@ struct deltas {
 	atomic_uint references;
 };
 
-int
-deltas_create(struct deltas **_result)
+struct deltas *
+deltas_create(void)
 {
 	struct deltas *result;
 
-	result = malloc(sizeof(struct deltas));
-	if (result == NULL)
-		return pr_enomem();
+	result = pmalloc(sizeof(struct deltas));
 
 	deltas_v4_init(&result->v4.adds);
 	deltas_v4_init(&result->v4.removes);
@@ -62,8 +60,7 @@ deltas_create(struct deltas **_result)
 	deltas_rk_init(&result->rk.removes);
 	atomic_init(&result->references, 1);
 
-	*_result = result;
-	return 0;
+	return result;
 }
 
 void
@@ -101,6 +98,7 @@ get_deltas_array4(struct deltas *deltas, int op)
 	}
 
 	pr_crit("Unknown delta operation: %d", op);
+	return NULL; /* Warning shutupper */
 }
 
 static struct deltas_v6 *
@@ -114,15 +112,18 @@ get_deltas_array6(struct deltas *deltas, int op)
 	}
 
 	pr_crit("Unknown delta operation: %d", op);
+	return NULL; /* Warning shutupper */
 }
 
-int
-deltas_add_roa(struct deltas *deltas, struct vrp const *vrp, int op)
+void
+deltas_add_roa(struct deltas *deltas, struct vrp const *vrp, int op,
+    char r1type, unsigned int roa_counter, unsigned int roa_count)
 {
 	union {
 		struct delta_v4 v4;
 		struct delta_v6 v6;
 	} delta;
+	char buffer[INET6_ADDRSTRLEN];
 
 	switch (vrp->addr_fam) {
 	case AF_INET:
@@ -130,19 +131,30 @@ deltas_add_roa(struct deltas *deltas, struct vrp const *vrp, int op)
 		delta.v4.prefix.addr = vrp->prefix.v4;
 		delta.v4.prefix.len = vrp->prefix_length;
 		delta.v4.max_length = vrp->max_prefix_length;
-		return deltas_v4_add(get_deltas_array4(deltas, op), &delta.v4);
+		deltas_v4_add(get_deltas_array4(deltas, op), &delta.v4);
+		return;
 	case AF_INET6:
 		delta.v6.as = vrp->asn;
 		delta.v6.prefix.addr = vrp->prefix.v6;
 		delta.v6.prefix.len = vrp->prefix_length;
 		delta.v6.max_length = vrp->max_prefix_length;
-		return deltas_v6_add(get_deltas_array6(deltas, op), &delta.v6);
+		deltas_v6_add(get_deltas_array6(deltas, op), &delta.v6);
+		return;
 	}
 
-	pr_crit("Unknown protocol: %d", vrp->addr_fam);
+	pr_crit("Unknown protocol: [%u %s/%u-%u %u] %c %u/%u "
+	    "(Please report this output to https://github.com/NICMx/FORT-validator/issues/89)",
+	    vrp->asn,
+	    addr2str6(&vrp->prefix.v6, buffer),
+	    vrp->prefix_length,
+	    vrp->max_prefix_length,
+	    vrp->addr_fam,
+	    r1type,
+	    roa_counter,
+	    roa_count);
 }
 
-int
+void
 deltas_add_router_key(struct deltas *deltas, struct router_key const *key,
     int op)
 {
@@ -154,9 +166,11 @@ deltas_add_router_key(struct deltas *deltas, struct router_key const *key,
 
 	switch (op) {
 	case FLAG_ANNOUNCEMENT:
-		return deltas_rk_add(&deltas->rk.adds, &delta);
+		deltas_rk_add(&deltas->rk.adds, &delta);
+		return;
 	case FLAG_WITHDRAWAL:
-		return deltas_rk_add(&deltas->rk.removes, &delta);
+		deltas_rk_add(&deltas->rk.removes, &delta);
+		return;
 	}
 
 	pr_crit("Unknown delta operation: %d", op);
@@ -179,13 +193,12 @@ __foreach_v4(struct deltas_v4 *array, delta_vrp_foreach_cb cb, void *arg,
 {
 	struct delta_vrp delta;
 	struct delta_v4 *d;
-	array_index i;
 	int error;
 
 	delta.vrp.addr_fam = AF_INET;
 	delta.flags = flags;
 
-	ARRAYLIST_FOREACH(array, d, i) {
+	ARRAYLIST_FOREACH(array, d) {
 		delta.vrp.asn = d->as;
 		delta.vrp.prefix.v4 = d->prefix.addr;
 		delta.vrp.prefix_length = d->prefix.len;
@@ -204,13 +217,12 @@ __foreach_v6(struct deltas_v6 *array, delta_vrp_foreach_cb cb, void *arg,
 {
 	struct delta_vrp delta;
 	struct delta_v6 *d;
-	array_index i;
 	int error;
 
 	delta.vrp.addr_fam = AF_INET6;
 	delta.flags = flags;
 
-	ARRAYLIST_FOREACH(array, d, i) {
+	ARRAYLIST_FOREACH(array, d) {
 		delta.vrp.asn = d->as;
 		delta.vrp.prefix.v6 = d->prefix.addr;
 		delta.vrp.prefix_length = d->prefix.len;
@@ -229,12 +241,11 @@ __foreach_rk(struct deltas_rk *array,  delta_router_key_foreach_cb cb,
 {
 	struct delta_router_key delta;
 	struct delta_rk *d;
-	array_index i;
 	int error;
 
 	delta.flags = flags;
 
-	ARRAYLIST_FOREACH(array, d, i) {
+	ARRAYLIST_FOREACH(array, d) {
 		delta.router_key.as = d->as;
 		memcpy(delta.router_key.ski, d->ski, RK_SKI_LEN);
 		memcpy(delta.router_key.spk, d->spk, RK_SPKI_LEN);

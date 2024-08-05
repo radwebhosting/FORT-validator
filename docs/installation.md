@@ -26,8 +26,6 @@ description: Guide to compile and install FORT Validator.
 4. [Option 3: Compiling and installing the git repository](#option-3-compiling-and-installing-the-git-repository)
 5. [Option 4: Running from a Docker container](#option-4-running-from-a-docker-container)
 6. [Fetching the TALs](#fetching-the-tals)
-	1. [`--init-tals` argument](#--init-tals-argument)
-	2. [Setup script](#setup-script)
 
 ## Dependencies
 
@@ -170,26 +168,26 @@ Thanks to [@alarig](https://github.com/alarig) for [his collaboration](https://g
 
 Layman will be utilized, so it must be installed in order to add the GURU repository:
 
-{% highlight bash %}
+```bash
 root# emerge --ask app-portage/layman
 root# layman -a guru
-{% endhighlight %}
+```
 
 Now, allow to install the unstable FORT validator package (use according to your architecture). The following lines can be used for **amd64** arch:
 
-{% highlight bash %}
+```bash
 root# nano /etc/portage/package.accept_keywords
 ## Add the following line and save
 net-misc/FORT-validator ~amd64
-{% endhighlight %}
+```
 
-FORT validator can now be installed. Don't forget to add ARIN's TAL and restart the validator:
+FORT validator can now be installed. Don't forget to update the TALs and restart the validator:
 
-{% highlight bash %}
+```bash
 root# emerge --ask net-misc/FORT-validator
-root# su -s /bin/sh -c '/usr/libexec/fort/fort_setup.sh /usr/share/fort/tal/' fort
+root# su -s /bin/sh -c '/usr/bin/fort --init-tals --tal /usr/share/fort/tal/' fort"
 root# rc-service fort restart
-{% endhighlight %}
+```
 
 The configuration file utilized by the service can be found at `/etc/fort/config.json` (see more about [configuration file](usage.html#--configuration-file)).
 
@@ -243,11 +241,11 @@ sudo make install
 
 {% highlight bash %}
 su
-pkg_add jansson libexecinfo rsync libxml # OpenBSD already ships with LibreSSL
+pkg_add curl jansson libexecinfo rsync libxml # OpenBSD already ships with LibreSSL
 exit
 
 ftp https://github.com/NICMx/FORT-validator/releases/download/{{ site.fort-latest-version }}/fort-{{ site.fort-latest-version }}.tar.gz
-tar xvzf fort-{{ site.fort-latest-version }}.tar.gz
+tar xzf fort-{{ site.fort-latest-version }}.tar.gz
 cd fort-{{ site.fort-latest-version }}/
 # clang is needed because of gnu11.
 env CC=clang CFLAGS=-I/usr/local/include LDFLAGS=-L/usr/local/lib ./configure
@@ -256,6 +254,8 @@ su
 make install
 exit
 {% endhighlight %}
+
+Last tested on OpenBSD 7.2.
 
 ### RHEL/CentOS version
 
@@ -341,29 +341,19 @@ sudo make install
 
 ### FreeBSD version
 
-The following steps are for FreeBSD 12.0 and later.
-
-FORT validator is available as part of the FreeBSD ports tree.  You can build it it effortlessly from there:
-
 {% highlight bash %}
-cd /usr/ports/net/fort
-make install clean
-{% endhighlight %}
-
-The ports system will find and install all the necessary dependencies for you.
-
-Should you want to build from a release tarball or a Git checkout, follow these instructions:
-
-{% highlight bash %}
-pkg install autotools curl jansson pkgconf rsync libxml2
+sudo pkg install autotools curl jansson pkgconf rsync libxml2
 fetch https://github.com/NICMx/FORT-validator/releases/download/{{ site.fort-latest-version }}/fort-{{ site.fort-latest-version }}.tar.gz
-tar xvzf fort-{{ site.fort-latest-version }}.tar.gz
+tar xzf fort-{{ site.fort-latest-version }}.tar.gz
 cd fort-{{ site.fort-latest-version }}/
-sh ./autoconf.sh
+
+export CFLAGS=-I/usr/local/include
 ./configure
 make
-make install
+sudo make install
 {% endhighlight %}
+
+Last tested on FreeBSD 13.1.
 
 ### Slackware version
 
@@ -407,7 +397,7 @@ The following steps are for Alpine Linux 3.12.0
 
 {% highlight bash %}
 su
-apk add build-base autoconf automake pkgconfig openssl openssl-dev jansson jansson-dev bsd-compat-headers rsync libexecinfo libexecinfo-dev libxml2 libxml2-dev libcurl curl-dev
+apk add build-base autoconf automake pkgconfig openssl-dev jansson-dev curl-dev libxml2-dev bsd-compat-headers rsync
 exit
 
 wget https://github.com/NICMx/FORT-validator/releases/download/{{ site.fort-latest-version }}/fort-{{ site.fort-latest-version }}.tar.gz
@@ -439,7 +429,7 @@ sudo make install
 
 ## Option 4: Running from a Docker container
 
-There's also the option to run FORT validator from a Docker container. The image can be pulled from [Docker Hub](https://hub.docker.com/r/nicmx/fort-validator) or built from the official Github repository: [FORT-validator/docker](https://github.com/NICMx/FORT-validator/tree/master/docker).
+There's also the option to run FORT validator from a Docker container. The image can be pulled from [Docker Hub](https://hub.docker.com/r/nicmx/fort-validator) or built from the official Github repository: [FORT-validator/docker](https://github.com/NICMx/FORT-validator/tree/main/docker).
 
 To pull the image from the official repository, run:
 
@@ -459,43 +449,12 @@ A basic example to run the container using the default values, reading from a lo
 docker run --name fort-validator -v host/path/to/tals:/etc/fort/tal:ro -p 8323:323 -d fort-validator
 {% endhighlight %}
 
-Read more about the Docker container at the Github repository [FORT-validator/docker](https://github.com/NICMx/FORT-validator/tree/master/docker).
+Read more about the Docker container at the Github repository [FORT-validator/docker](https://github.com/NICMx/FORT-validator/tree/main/docker).
 
 ## Fetching the TALs
 
-Once FORT validator is installed and ready to run, you should have the TAL files from the 5 RIRs. You can obtain them one by one from each RIR, or also you can use the following options.
-
-### `--init-tals` argument
-
-Probably this is a more straight forward approach, since you only need to run Fort binary using the [`--init-tals`](usage.html#--init-tals) argument:
-
-{% highlight bash %}
+```bash
 fort --init-tals --tal /etc/fort/tal
-{% endhighlight %}
+```
 
-See more about this argument at [Program Arguments - `--init-tals`](usage.html#--init-tals).
-
-### Setup script
-
-> ![img/warn.svg](img/warn.svg) This script exists merely to ease the ARIN TAL download (and some other additional stuff), it isn't a prerequisite to compile or run FORT validator, although we strongly advise to fetch ARIN TAL (using this script or by other means) in order to get the whole RPKI validated by FORT validator.
-
-The script can be found [here](https://github.com/NICMx/FORT-validator/blob/{{ site.fort-latest-version }}/fort_setup.sh). It only expects one argument: an _existent directory path_ where the 5 RIRs TALS will be downloaded.
-
-Basically, it does the following:
-1. Display message to agree ARIN RPA.
-2. If agreed, download ARIN TAL to the received arg (named `TALS_PATH` from now on).
-3. Download the rest of the TALs to `TALS_PATH`.
-4. Try to create directory `/var/cache/fort/repository`, on error create `/tmp/fort/repository`.
-5. Create configuration file with [`tal`](https://nicmx.github.io/FORT-validator/usage.html#--tal) and [`local-repository`](https://nicmx.github.io/FORT-validator/usage.html#--local-repository) members, with a value of `TALS_PATH` (absolute path) and the directory path created at the previous step.
-6. Display FORT validator execution examples:
-  - Using the created configuration file (uses the arg [`-f`](https://nicmx.github.io/FORT-validator/usage.html#--configuration-file)).
-  - Using the values of the configuration file (uses the args [`--tal`](https://nicmx.github.io/FORT-validator/usage.html#--tal) and [`--local-repository`](https://nicmx.github.io/FORT-validator/usage.html#--local-repository)).
-
-Preferably, run this script with the same user what will run FORT validator. It's recommended that the user has write permission in `/var/cache`, since the script will try to create a directory there ([see more](https://refspecs.linuxfoundation.org/FHS_3.0/fhs/ch05s05.html)). Here's an execution example:
-
-{% highlight bash %}
-# Get the script
-wget https://raw.githubusercontent.com/NICMx/FORT-validator/{{ site.fort-latest-version }}/fort_setup.sh
-mkdir ~/tal
-./fort_setup.sh ~/tal
-{% endhighlight %}
+More details [here](usage.html#--init-tals).

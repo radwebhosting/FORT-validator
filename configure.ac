@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.69])
-AC_INIT([fort], [1.5.3], [fort-validator@nic.mx])
+AC_INIT([fort],[1.6.2],[validadorfort@fortproject.net])
 AC_CONFIG_SRCDIR([src/main.c])
 AM_INIT_AUTOMAKE([subdir-objects])
 
@@ -29,16 +29,19 @@ AC_SEARCH_LIBS([pthread_create], [pthread], [],
 AC_SEARCH_LIBS([X509_get_version], [crypto], [],
 	[AC_MSG_ERROR([unable to find the X509_get_version() function])]
 )
-AC_SEARCH_LIBS([backtrace],[execinfo],[],
-	[AC_MSG_ERROR([unable to find backtrace() function])]
+
+AC_SEARCH_LIBS([backtrace],[execinfo],
+	[have_backtrace="yes"],
+	[have_backtrace="no"]
 )
+AM_CONDITIONAL([BACKTRACE_ENABLED], [test "x$have_backtrace" != "xno"])
 
 # Dependencies managed by pkg-config
 # By the way: Apparently PKG_CHECK_MODULES is poor practice now. I can't tell;
 # it's always the same guy complaining about it in Stack Overflow.
 # (Main one: https://stackoverflow.com/questions/10220946)
-# But I couldn't make check work with AC_SEARCH_LIBS, and (probably due to
-# typical obscure bullshit autotools reasoning) I have no idea why.
+# But I couldn't make check work with AC_SEARCH_LIBS, probably because of some
+# obscure autotools reasoning.
 PKG_CHECK_MODULES([JANSSON], [jansson])
 PKG_CHECK_MODULES([CURL], [libcurl])
 PKG_CHECK_MODULES([XML2], [libxml-2.0])
@@ -46,4 +49,5 @@ PKG_CHECK_MODULES([CHECK], [check], [usetests=yes], [usetests=no])
 AM_CONDITIONAL([USE_TESTS], [test "x$usetests" = "xyes"])
 
 # Spit out the makefiles.
-AC_OUTPUT(Makefile src/Makefile man/Makefile test/Makefile)
+AC_CONFIG_FILES([Makefile src/Makefile man/Makefile test/Makefile])
+AC_OUTPUT

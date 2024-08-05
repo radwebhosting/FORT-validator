@@ -1,9 +1,9 @@
 #include "thread/thread_pool.h"
 
 #include <sys/queue.h>
-#include <pthread.h>
-#include <stdlib.h>
-#include <string.h>
+
+#include "alloc.h"
+#include "common.h"
 #include "log.h"
 
 /*
@@ -79,26 +79,6 @@ struct thread_pool {
 	unsigned int thread_ids_len;
 };
 
-static void
-panic_on_fail(int error, char const *function_name)
-{
-	if (error)
-		pr_crit("%s() returned error code %d. This is too critical for a graceful recovery; I must die now.",
-		    function_name, error);
-}
-
-static void
-mutex_lock(struct thread_pool *pool)
-{
-	panic_on_fail(pthread_mutex_lock(&pool->lock), "pthread_mutex_lock");
-}
-
-static void
-mutex_unlock(struct thread_pool *pool)
-{
-	panic_on_fail(pthread_mutex_unlock(&pool->lock), "pthread_mutex_unlock");
-}
-
 /* Wait until the parent sends us work. */
 static void
 wait_for_parent_signal(struct thread_pool *pool, unsigned int thread_id)
@@ -129,22 +109,18 @@ signal_to_worker(struct thread_pool *pool)
 	    "pthread_cond_signal");
 }
 
-static int
-task_create(char const *name, thread_pool_task_cb cb, void *arg,
-    struct thread_pool_task **out)
+static struct thread_pool_task *
+task_create(char const *name, thread_pool_task_cb cb, void *arg)
 {
 	struct thread_pool_task *task;
 
-	task = malloc(sizeof(struct thread_pool_task));
-	if (task == NULL)
-		return pr_enomem();
+	task = pmalloc(sizeof(struct thread_pool_task));
 
 	task->name = name;
 	task->cb = cb;
 	task->arg = arg;
 
-	*out = task;
-	return 0;
+	return task;
 }
 
 static void
@@ -203,7 +179,7 @@ tasks_poll(void *arg)
 	struct thread_pool_task *task;
 	unsigned int thread_id;
 
-	mutex_lock(pool);
+	mutex_lock(&pool->lock);
 
 	pool->thread_count++;
 	thread_id = pool->thread_count;
@@ -218,7 +194,7 @@ tasks_poll(void *arg)
 		/* Claim the work. */
 		task = task_queue_pull(pool, thread_id);
 		pool->working_count++;
-		mutex_unlock(pool);
+		mutex_unlock(&pool->lock);
 
 		if (task != NULL) {
 			task->cb(task->arg);
@@ -227,7 +203,7 @@ tasks_poll(void *arg)
 			task_destroy(task);
 		}
 
-		mutex_lock(pool);
+		mutex_lock(&pool->lock);
 		pool->working_count--;
 
 		if (pool->stop)
@@ -237,7 +213,7 @@ tasks_poll(void *arg)
 			signal_to_parent(pool);
 	}
 
-	mutex_unlock(pool);
+	mutex_unlock(&pool->lock);
 	pr_op_debug("Thread %s.%u: Returning.", pool->name, thread_id);
 	return NULL;
 }
@@ -249,7 +225,7 @@ thread_pool_attr_create(pthread_attr_t *attr)
 
 	error = pthread_attr_init(attr);
 	if (error) {
-		pr_op_err("pthread_attr_init() returned error %d: %s",
+		pr_op_err_st("pthread_attr_init() returned error %d: %s",
 		    error, strerror(error));
 		return error;
 	}
@@ -258,7 +234,8 @@ thread_pool_attr_create(pthread_attr_t *attr)
 	error = pthread_attr_setstacksize(attr, 1024 * 1024 * 2);
 	if (error) {
 		pthread_attr_destroy(attr);
-		pr_op_err("pthread_attr_setstacksize() returned error %d: %s",
+		pr_op_err_st(
+		    "pthread_attr_setstacksize() returned error %d: %s",
 		    error, strerror(error));
 		return error;
 	}
@@ -297,7 +274,7 @@ spawn_threads(struct thread_pool *pool)
 		error = pthread_create(&pool->thread_ids[i], &attr, tasks_poll,
 		    pool);
 		if (error) {
-			pr_op_err("pthread_create() returned error %d: %s",
+			pr_op_err_st("pthread_create() returned error %d: %s",
 			    error, strerror(error));
 			goto end;
 		}
@@ -317,14 +294,12 @@ thread_pool_create(char const *name, unsigned int threads,
 	struct thread_pool *result;
 	int error;
 
-	result = malloc(sizeof(struct thread_pool));
-	if (result == NULL)
-		return pr_enomem();
+	result = pmalloc(sizeof(struct thread_pool));
 
 	/* Init locking */
 	error = pthread_mutex_init(&result->lock, NULL);
 	if (error) {
-		pr_op_err("pthread_mutex_init() returned error %d: %s",
+		pr_op_err_st("pthread_mutex_init() returned error %d: %s",
 		    error, strerror(error));
 		goto free_tmp;
 	}
@@ -332,7 +307,7 @@ thread_pool_create(char const *name, unsigned int threads,
 	/* Init conditional to signal pending work */
 	error = pthread_cond_init(&result->parent2worker, NULL);
 	if (error) {
-		pr_op_err("pthread_cond_init(p2w) returned error %d: %s",
+		pr_op_err_st("pthread_cond_init(p2w) returned error %d: %s",
 		    error, strerror(error));
 		goto free_mutex;
 	}
@@ -340,7 +315,7 @@ thread_pool_create(char const *name, unsigned int threads,
 	/* Init conditional to signal no pending work */
 	error = pthread_cond_init(&result->worker2parent, NULL);
 	if (error) {
-		pr_op_err("pthread_cond_init(w2p) returned error %d: %s",
+		pr_op_err_st("pthread_cond_init(w2p) returned error %d: %s",
 		    error, strerror(error));
 		goto free_working_cond;
 	}
@@ -350,11 +325,7 @@ thread_pool_create(char const *name, unsigned int threads,
 	result->stop = false;
 	result->working_count = 0;
 	result->thread_count = 0;
-	result->thread_ids = calloc(threads, sizeof(pthread_t));
-	if (result->thread_ids == NULL) {
-		error = pr_enomem();
-		goto free_waiting_cond;
-	}
+	result->thread_ids = pcalloc(threads, sizeof(pthread_t));
 	result->thread_ids_len = threads;
 
 	error = spawn_threads(result);
@@ -366,7 +337,6 @@ thread_pool_create(char const *name, unsigned int threads,
 
 free_thread_ids:
 	free(result->thread_ids);
-free_waiting_cond:
 	pthread_cond_destroy(&result->worker2parent);
 free_working_cond:
 	pthread_cond_destroy(&result->parent2worker);
@@ -387,7 +357,7 @@ thread_pool_destroy(struct thread_pool *pool)
 	pr_op_debug("Destroying thread pool '%s'.", pool->name);
 
 	/* Remove all pending work and send the signal to stop it */
-	mutex_lock(pool);
+	mutex_lock(&pool->lock);
 	queue = &(pool->queue);
 	while (!TAILQ_EMPTY(queue)) {
 		tmp = TAILQ_FIRST(queue);
@@ -396,7 +366,7 @@ thread_pool_destroy(struct thread_pool *pool)
 	}
 	pool->stop = true;
 	pthread_cond_broadcast(&pool->parent2worker);
-	mutex_unlock(pool);
+	mutex_unlock(&pool->lock);
 
 	for (t = 0; t < pool->thread_ids_len; t++)
 		pthread_join(pool->thread_ids[t], NULL);
@@ -414,27 +384,23 @@ thread_pool_destroy(struct thread_pool *pool)
  * Push a new task to @pool, the task to be executed is @cb with the argument
  * @arg.
  */
-int
+void
 thread_pool_push(struct thread_pool *pool, char const *task_name,
     thread_pool_task_cb cb, void *arg)
 {
 	struct thread_pool_task *task;
-	int error;
 
-	error = task_create(task_name, cb, arg, &task);
-	if (error)
-		return error;
+	task = task_create(task_name, cb, arg);
 
-	mutex_lock(pool);
+	mutex_lock(&pool->lock);
 	task_queue_push(pool, task);
-	mutex_unlock(pool);
+	mutex_unlock(&pool->lock);
 
 	/*
 	 * Note: This assumes the threads have already spawned.
 	 * If not, they will claim work once they spawn anyway.
 	 */
 	signal_to_worker(pool);
-	return 0;
 }
 
 /* There are available threads to work? */
@@ -443,9 +409,9 @@ thread_pool_avail_threads(struct thread_pool *pool)
 {
 	bool result;
 
-	mutex_lock(pool);
+	mutex_lock(&pool->lock);
 	result = (pool->working_count < pool->thread_ids_len);
-	mutex_unlock(pool);
+	mutex_unlock(&pool->lock);
 
 	return result;
 }
@@ -454,7 +420,7 @@ thread_pool_avail_threads(struct thread_pool *pool)
 void
 thread_pool_wait(struct thread_pool *pool)
 {
-	mutex_lock(pool);
+	mutex_lock(&pool->lock);
 
 	/* If the pool has to stop, the wait will happen during the joins. */
 	while (!pool->stop) {
@@ -473,5 +439,5 @@ thread_pool_wait(struct thread_pool *pool)
 		wait_for_worker_signal(pool);
 	}
 
-	mutex_unlock(pool);
+	mutex_unlock(&pool->lock);
 }

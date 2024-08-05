@@ -7,9 +7,9 @@
  * This module stores VRPs and their serials.
  */
 
-#include <stdbool.h>
-#include "types/address.h"
+#include "as_number.h"
 #include "rtr/db/deltas_array.h"
+#include "types/address.h"
 
 int vrps_init(void);
 void vrps_destroy(void);
@@ -29,8 +29,8 @@ int get_last_serial_number(serial_t *);
 
 int handle_roa_v4(uint32_t, struct ipv4_prefix const *, uint8_t, void *);
 int handle_roa_v6(uint32_t, struct ipv6_prefix const *, uint8_t, void *);
-int handle_router_key(unsigned char const *, uint32_t, unsigned char const *,
-    void *);
+int handle_router_key(unsigned char const *, struct asn_range const *,
+    unsigned char const *, void *);
 
 uint16_t get_current_session_id(uint8_t);
 

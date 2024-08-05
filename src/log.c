@@ -1,13 +1,16 @@
 #include "log.h"
 
+#include <errno.h>
+#ifdef BACKTRACE_ENABLED
 #include <execinfo.h>
-#include <openssl/bio.h>
+#endif
 #include <openssl/err.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdarg.h>
+#include <sys/stat.h>
 #include <syslog.h>
 #include <time.h>
-#include <unistd.h>
 
 #include "config.h"
 #include "thread_var.h"
@@ -63,9 +66,10 @@ static pthread_mutex_t logck;
  * aware that pthread_mutex_lock() can return error codes, which shouldn't
  * prevent critical stack traces from printing.)
  */
-void
+static void
 print_stack_trace(char const *title)
 {
+#ifdef BACKTRACE_ENABLED
 #define STACK_SIZE 64
 
 	void *array[STACK_SIZE];
@@ -97,6 +101,7 @@ print_stack_trace(char const *title)
 	}
 
 	free(strings);
+#endif /* BACKTRACE_ENABLED */
 }
 
 static void init_config(struct log_config *cfg, bool unit_tests)
@@ -108,6 +113,8 @@ static void init_config(struct log_config *cfg, bool unit_tests)
 	cfg->color = false;
 	cfg->facility = LOG_DAEMON;
 }
+
+#ifdef BACKTRACE_ENABLED
 
 static void
 sigsegv_handler(int signum)
@@ -135,6 +142,8 @@ sigsegv_handler(int signum)
 	kill(getpid(), signum);
 }
 
+#endif
+
 /*
  * Register better handlers for some signals.
  *
@@ -143,6 +152,7 @@ sigsegv_handler(int signum)
 static void
 register_signal_handlers(void)
 {
+#ifdef BACKTRACE_ENABLED
 	struct sigaction action;
 	void* dummy;
 
@@ -166,6 +176,7 @@ register_signal_handlers(void)
 		pr_op_err("SIGSEGV handler registration failure: %s",
 		    strerror(errno));
 	}
+#endif
 
 	/*
 	 * SIGPIPE can be triggered by any I/O function. libcurl is particularly
@@ -177,8 +188,8 @@ register_signal_handlers(void)
 	 * > happen
 	 * (Documentation of CURLOPT_NOSIGNAL)
 	 *
-	 * All SIGPIPE means is "the peer closed the connection for some reason,
-	 * fuck you."
+	 * All SIGPIPE means is "the peer closed the connection for some
+	 * reason."
 	 * Which is a normal I/O error, and should be handled by the normal
 	 * error propagation logic, not by a signal handler.
 	 * So, ignore SIGPIPE.
@@ -252,19 +263,13 @@ log_start(void)
 	if (config_get_val_log_enabled()) {
 		switch (config_get_val_log_output()) {
 		case SYSLOG:
-			pr_op_info("Syslog log output configured; disabling validation logging on standard streams.");
-			pr_op_info("(Validation Logs will be sent to syslog only.)");
 			val_config.fprintf_enabled = false;
 			break;
 		case CONSOLE:
-			pr_op_info("Console log output configured; disabling validation logging on syslog.");
-			pr_op_info("(Validation Logs will be sent to the standard streams only.)");
 			val_config.syslog_enabled = false;
 			break;
 		}
 	} else {
-		pr_op_info("Disabling validation logging on syslog.");
-		pr_op_info("Disabling validation logging on standard streams.");
 		val_config.fprintf_enabled = false;
 		val_config.syslog_enabled = false;
 	}
@@ -272,13 +277,9 @@ log_start(void)
 	if (config_get_op_log_enabled()) {
 		switch (config_get_op_log_output()) {
 		case SYSLOG:
-			pr_op_info("Syslog log output configured; disabling operation logging on standard streams.");
-			pr_op_info("(Operation Logs will be sent to syslog only.)");
 			op_config.fprintf_enabled = false;
 			break;
 		case CONSOLE:
-			pr_op_info("Console log output configured; disabling operation logging on syslog.");
-			pr_op_info("(Operation Logs will be sent to the standard streams only.)");
 			if (val_config.syslog_enabled)
 				op_config.syslog_enabled = false;
 			else
@@ -286,8 +287,6 @@ log_start(void)
 			break;
 		}
 	} else {
-		pr_op_info("Disabling operation logging on syslog.");
-		pr_op_info("Disabling operation logging on standard streams.");
 		op_config.fprintf_enabled = false;
 		if (val_config.syslog_enabled)
 			op_config.syslog_enabled = false;
@@ -398,7 +397,7 @@ __vfprintf(int level, struct log_config *cfg, char const *format, va_list args)
 	if (cfg->color)
 		fprintf(lvl->stream, "%s", lvl->color);
 
-	now = time(0);
+	now = time(NULL);
 	if (now != ((time_t) -1)) {
 		localtime_r(&now, &stm_buff);
 		strftime(time_buff, sizeof(time_buff), "%b %e %T", &stm_buff);
@@ -434,10 +433,8 @@ __syslog(int level, struct log_config *cfg, const char *format, va_list args)
 {
 	static char msg[MSG_LEN];
 	char const *file_name;
-	struct level const *lvl;
 
 	file_name = fnstack_peek();
-	lvl = level2struct(level);
 
 	lock_mutex();
 
@@ -445,18 +442,16 @@ __syslog(int level, struct log_config *cfg, const char *format, va_list args)
 	vsnprintf(msg, MSG_LEN, format, args);
 	if (file_name != NULL) {
 		if (cfg->prefix != NULL)
-			syslog(level | cfg->facility, "%s [%s]: %s: %s",
-			    lvl->label, cfg->prefix, file_name, msg);
+			syslog(level | cfg->facility, "[%s] %s: %s",
+			    cfg->prefix, file_name, msg);
 		else
-			syslog(level | cfg->facility, "%s: %s: %s",
-			    lvl->label, file_name, msg);
+			syslog(level | cfg->facility, "%s: %s", file_name, msg);
 	} else {
 		if (cfg->prefix != NULL)
-			syslog(level | cfg->facility, "%s [%s]: %s",
-			    lvl->label, cfg->prefix, msg);
+			syslog(level | cfg->facility, "[%s] %s",
+			    cfg->prefix, msg);
 		else
-			syslog(level | cfg->facility, "%s: %s",
-			    lvl->label, msg);
+			syslog(level | cfg->facility, "%s", msg);
 	}
 
 	unlock_mutex();
@@ -507,6 +502,13 @@ pr_op_warn(const char *format, ...)
 
 int
 pr_op_err(const char *format, ...)
+{
+	PR_SIMPLE(LOG_ERR, op_config);
+	return -EINVAL;
+}
+
+int
+pr_op_err_st(const char *format, ...)
 {
 	PR_SIMPLE(LOG_ERR, op_config);
 	lock_mutex();
@@ -615,8 +617,8 @@ val_crypto_err(const char *format, ...)
 	return crypto_err(&val_config, pr_val_err);
 }
 
-int
-pr_enomem(void)
+__dead void
+enomem_panic(void)
 {
 	static char const *ENOMEM_MSG = "Out of memory.\n";
 	ssize_t garbage;
@@ -627,16 +629,20 @@ pr_enomem(void)
 	 */
 
 	if (LOG_ERR > op_config.level)
-		return -ENOMEM;
+		goto done;
 
 	if (op_config.fprintf_enabled) {
 		lock_mutex();
 		/*
 		 * write() is AS-Safe, which implies it doesn't allocate,
 		 * unlike printf().
+		 *
+		 * "garbage" prevents write()'s warn_unused_result (compiler
+		 * warning).
 		 */
 		garbage = write(STDERR_FILENO, ENOMEM_MSG, strlen(ENOMEM_MSG));
 		unlock_mutex();
+		/* Prevents "set but not used" warning. */
 		garbage++;
 	}
 
@@ -647,7 +653,7 @@ pr_enomem(void)
 		unlock_mutex();
 	}
 
-	return -ENOMEM;
+done:	exit(ENOMEM);
 }
 
 __dead void
